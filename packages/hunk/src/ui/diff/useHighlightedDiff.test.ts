@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import {
   createTestDiffFile,
   createTestSourceFetcher,
@@ -11,7 +11,12 @@ import {
   prefetchHighlightedDiff,
   waitForHighlightedDiffIdle,
 } from "./useHighlightedDiff";
-import { registerHighlightWorker } from "./worker";
+import { disposeHighlightWorker, registerHighlightWorker } from "./worker";
+
+// Release singleton worker doubles so later test files start from a real worker.
+afterAll(() => {
+  disposeHighlightWorker();
+});
 
 /** Build one file large enough to qualify for worker highlighting. */
 function createLargeHighlightTestFile(id: string) {
@@ -173,6 +178,25 @@ describe("highlighted diff cache", () => {
     const second = await prefetchHighlightedDiff({ file, offloadLargeDiff: true, theme });
     expect(second.retryable).toBe(true);
     expect(secondWorker.calls).toBe(1);
+  });
+
+  test("stops re-requesting a worker highlight once the retry budget is spent", async () => {
+    const file = createLargeHighlightTestFile("exhausted-worker-retries");
+    const theme = resolveTheme("github-dark-default", null);
+
+    // Viewport prefetch re-requests every file in its halo on each scroll, so a failure that keeps
+    // repeating must settle on cached plain rows instead of restarting the highlight every time.
+    for (const expectedCalls of [1, 1]) {
+      const worker = registerFailingHighlightWorkerForTest();
+      const result = await prefetchHighlightedDiff({ file, offloadLargeDiff: true, theme });
+      expect(result.retryable).toBe(true);
+      expect(worker.calls).toBe(expectedCalls);
+    }
+
+    const settledWorker = registerFailingHighlightWorkerForTest();
+    const settled = await prefetchHighlightedDiff({ file, offloadLargeDiff: true, theme });
+    expect(settled.retryable).toBeUndefined();
+    expect(settledWorker.calls).toBe(0);
   });
 
   test("reuses source-backed highlights for equivalent versioned providers", () => {
