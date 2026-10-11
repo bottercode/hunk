@@ -229,31 +229,35 @@ describe("filesystem documents", () => {
     await expect(source.read(root, abort.signal)).rejects.toThrow();
   }, 30_000);
 
-  test("edits a private copy, preserves BOM bytes, and saves through the original handle", async () => {
-    const root = await createTestRoot();
-    const file = join(root, "selected.txt");
-    const original = Buffer.from("\ufeffbefore\n");
-    await writeFile(file, original);
-    const source = await createFilesystemSource(root);
-    let copyPath = "";
-    expect(
-      await source.edit?.(file, async (copy) => {
-        copyPath = copy;
-        expect(copy).not.toBe(file);
-        expect(await readFile(copy)).toEqual(original);
-        return null;
-      }),
-    ).toBeNull();
-    expect(await readFile(file)).toEqual(original);
-    expect(existsSync(copyPath)).toBe(false);
-    expect(
-      await source.edit?.(file, async (copy) => {
-        await writeFile(copy, "after\n");
-        return null;
-      }),
-    ).toBeNull();
-    expect(await readFile(file, "utf8")).toBe("after\n");
-  });
+  test(
+    "edits a private copy, preserves BOM bytes, and saves through the original handle",
+    async () => {
+      const root = await createTestRoot();
+      const file = join(root, "selected.txt");
+      const original = Buffer.from("\ufeffbefore\n");
+      await writeFile(file, original);
+      const source = await createFilesystemSource(root);
+      let copyPath = "";
+      expect(
+        await source.edit?.(file, async (copy) => {
+          copyPath = copy;
+          expect(copy).not.toBe(file);
+          expect(await readFile(copy)).toEqual(original);
+          return null;
+        }),
+      ).toBeNull();
+      expect(await readFile(file)).toEqual(original);
+      expect(existsSync(copyPath)).toBe(false);
+      expect(
+        await source.edit?.(file, async (copy) => {
+          await writeFile(copy, "after\n");
+          return null;
+        }),
+      ).toBeNull();
+      expect(await readFile(file, "utf8")).toBe("after\n");
+    },
+    process.platform === "win32" ? 40_000 : 5000,
+  );
 
   test("rejects overlapping editors before launch and permits another edit after settlement", async () => {
     const root = await createTestRoot();

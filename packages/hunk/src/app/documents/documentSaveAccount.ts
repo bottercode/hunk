@@ -10,7 +10,8 @@ async function accountMetadata(command: string, args: string[]) {
   const { stdout } = await execute(command, args, {
     encoding: "utf8",
     maxBuffer: 8192,
-    timeout: 5000,
+    // Cold PowerShell/.NET startup can exceed five seconds on shared Windows runners.
+    timeout: process.platform === "win32" ? 15_000 : 5000,
     windowsHide: true,
   });
   return stdout.trim();
