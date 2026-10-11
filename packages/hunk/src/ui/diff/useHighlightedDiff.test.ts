@@ -230,6 +230,29 @@ describe("highlighted diff cache", () => {
     expect(notified).toBe(1);
   });
 
+  test("wakes a provisional reader when the retry completes before it subscribes", async () => {
+    const file = createLargeHighlightTestFile("late-provisional-reader");
+    const theme = resolveTheme("github-dark-default", null);
+    registerFailingHighlightWorkerForTest();
+    const first = await prefetchHighlightedDiff({ file, offloadLargeDiff: true, theme });
+    expect(first.retryable).toBe(true);
+
+    // Complete a successful retry in the window between the provisional render and its effect.
+    const successful = await prefetchHighlightedDiff({ file, theme });
+    expect(successful.retryable).toBeUndefined();
+    expect(successful.additionLines.length).toBeGreaterThan(0);
+
+    let notified = 0;
+    const unsubscribe = subscribeToHighlightedDiff(highlightedDiffCacheKey(theme, file), () => {
+      notified += 1;
+    });
+    try {
+      expect(notified).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test("reuses source-backed highlights for equivalent versioned providers", () => {
     const base = createTestDiffFile({ id: "cache", path: "cache.ts" });
     const firstFetcher = Object.assign(

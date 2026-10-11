@@ -92,6 +92,12 @@ export function subscribeToHighlightedDiff(cacheKey: string, listener: () => voi
   listeners.add(listener);
   HIGHLIGHT_RESULT_LISTENERS.set(cacheKey, listeners);
 
+  // A retry may finish between the provisional render and this subscription's effect. Recheck
+  // after registering so the reader observes that commit even without another render.
+  if (SHARED_HIGHLIGHTED_DIFF_CACHE.peek(cacheKey)) {
+    listener();
+  }
+
   return () => {
     listeners.delete(listener);
     if (listeners.size === 0) {
