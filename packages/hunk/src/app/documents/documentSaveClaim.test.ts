@@ -1,9 +1,21 @@
-import { afterEach, expect, test } from "bun:test";
-import { chmod, lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTestDeferred } from "../../../../../test/helpers/diff-helpers";
 import { withDocumentSaveClaim } from "./documentSaveClaim";
+import * as saveAccount from "./documentSaveAccount";
+import { findProjectRootCandidate } from "../../core/process/projectRoot";
 
 const roots: string[] = [];
 const identity = { dev: 1, ino: 42 };
@@ -17,6 +29,25 @@ async function createTestClaimDirectory() {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+test("default save coordination does not turn the account home into a project root", async () => {
+  const home = await realpath(await createTestClaimDirectory());
+  const launchDirectory = join(home, "AppData", "Local", "Temp", "document");
+  await mkdir(launchDirectory, { recursive: true });
+  const initialRoot = findProjectRootCandidate(launchDirectory);
+  const lookup = spyOn(saveAccount, "documentSaveAccountHome").mockResolvedValue(home);
+
+  try {
+    await withDocumentSaveClaim(identity, async () => {
+      expect(findProjectRootCandidate(launchDirectory)).toBe(initialRoot);
+      const namespaces = await readdir(join(home, ".config", "hunk", "document-save-claims"));
+      expect(namespaces).toHaveLength(1);
+    });
+    expect(findProjectRootCandidate(launchDirectory)).toBe(initialRoot);
+  } finally {
+    lookup.mockRestore();
+  }
 });
 
 test("a live reservation rejects the same inode while allowing unrelated documents", async () => {

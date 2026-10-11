@@ -71,7 +71,8 @@ failures/recovery paths are printed after the terminal is restored. `$EDITOR` it
 code, not sandboxed.
 
 Updated Hunk sessions in the same OS account and process namespace coordinate validation and writeback with
-private, inode-keyed save claims under the OS account home's `.hunk/document-save-claims/` directory.
+private, inode-keyed save claims under the OS account home's `.config/hunk/document-save-claims/`
+directory. This state directory does not create a `.hunk` project marker in the account home.
 This location is independent of per-session `HOME`, XDG and temporary-directory overrides. Account
 lookup uses OS records, including built-in PowerShell without profiles on Windows; lookup or private
 directory failures refuse writeback and retain the edited copy. Competing

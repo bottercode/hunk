@@ -21,7 +21,8 @@ async function documentSaveClaimDirectory() {
   // A PID is meaningful only in its namespace; shared container homes must not reap host claims.
   const namespace = process.platform === "linux" ? await readlink("/proc/self/ns/pid") : "host";
   const host = createHash("sha256").update(`${hostname()}\0${namespace}`).digest("hex");
-  return join(home, ".hunk", "document-save-claims", host);
+  // `.hunk` marks a project root; state storage must not promote the home or its temp subtree.
+  return join(home, ".config", "hunk", "document-save-claims", host);
 }
 
 /** Treat unknown process-access failures as live owners; only ESRCH permits stale-claim cleanup. */
