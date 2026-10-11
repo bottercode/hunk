@@ -4,6 +4,7 @@ import type { DiffFile } from "../../core/changeset/model";
 import type { AppTheme } from "../themes";
 import { loadHighlightedDiff, type HighlightedDiffCode } from "./diffRows";
 import { createHighlightedDiffCache } from "./highlightedDiffCache";
+import { createHighlightRetryBudget } from "./highlightRetryBudget";
 import { syntaxHighlightThemeName } from "./syntaxHighlightTheme";
 
 const SHARED_HIGHLIGHTED_DIFF_CACHE = createHighlightedDiffCache();
@@ -75,8 +76,8 @@ export function highlightedDiffCacheKey(theme: AppTheme, file: DiffFile) {
  */
 const MAX_HIGHLIGHT_RETRY_ATTEMPTS = 1;
 
-/** Retryable worker failures seen per cache key, cleared once the key settles. */
-const HIGHLIGHT_RETRY_ATTEMPTS = new Map<string, number>();
+/** Bound abandoned retry history as well as the results retained by the shared cache. */
+const HIGHLIGHT_RETRY_BUDGET = createHighlightRetryBudget(MAX_HIGHLIGHT_RETRY_ATTEMPTS);
 
 /** Readers waiting for one cache key to receive a cacheable result. */
 const HIGHLIGHT_RESULT_LISTENERS = new Map<string, Set<() => void>>();
@@ -138,20 +139,17 @@ function commitHighlightResult(
   SHARED_HIGHLIGHT_PROMISES.delete(cacheKey);
 
   if (result.retryable) {
-    const attempts = (HIGHLIGHT_RETRY_ATTEMPTS.get(cacheKey) ?? 0) + 1;
-    if (attempts <= MAX_HIGHLIGHT_RETRY_ATTEMPTS) {
-      HIGHLIGHT_RETRY_ATTEMPTS.set(cacheKey, attempts);
+    if (HIGHLIGHT_RETRY_BUDGET.recordFailure(cacheKey)) {
       return true;
     }
 
     // Budget spent: cache plain rows without the retryable marker so readers stop re-requesting.
-    HIGHLIGHT_RETRY_ATTEMPTS.delete(cacheKey);
     SHARED_HIGHLIGHTED_DIFF_CACHE.set(cacheKey, { deletionLines: [], additionLines: [] });
     notifyHighlightedDiffCached(cacheKey);
     return true;
   }
 
-  HIGHLIGHT_RETRY_ATTEMPTS.delete(cacheKey);
+  HIGHLIGHT_RETRY_BUDGET.clear(cacheKey);
   SHARED_HIGHLIGHTED_DIFF_CACHE.set(cacheKey, result);
   notifyHighlightedDiffCached(cacheKey);
   return true;
@@ -167,6 +165,7 @@ function ensureHighlightedDiffLoaded(
   // Viewport prefetch calls this for every file in its halo on each scroll, so this read is also
   // what keeps the files around the viewport at the recent end of the cache while files entering
   // the halo evict older ones.
+  HIGHLIGHT_RETRY_BUDGET.touch(cacheKey);
   const cached = SHARED_HIGHLIGHTED_DIFF_CACHE.get(cacheKey);
   if (cached) {
     return Promise.resolve(cached);

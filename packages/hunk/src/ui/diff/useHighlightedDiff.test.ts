@@ -200,6 +200,49 @@ describe("highlighted diff cache", () => {
     expect(settledWorker.calls).toBe(0);
   });
 
+  test("reclaims abandoned revision budgets while retaining the most recent failure", async () => {
+    const base = createLargeHighlightTestFile("abandoned-revision-budget");
+    const theme = resolveTheme("github-dark-default", null);
+
+    /** Give each abandoned snapshot its own highlight identity without rebuilding its source. */
+    function createTestRevision(index: number) {
+      return { ...base, id: `abandoned-revision-budget-${index}` };
+    }
+
+    // Exceed the 1,024-key retry-history bound without ever revisiting the first failures.
+    for (let index = 0; index < 1_100; index += 1) {
+      registerFailingHighlightWorkerForTest();
+      await prefetchHighlightedDiff({
+        file: createTestRevision(index),
+        offloadLargeDiff: true,
+        theme,
+      });
+    }
+
+    // The oldest key gets a fresh retry budget rather than retaining its abandoned first failure.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const worker = registerFailingHighlightWorkerForTest();
+      await prefetchHighlightedDiff({ file: createTestRevision(0), offloadLargeDiff: true, theme });
+      expect(worker.calls).toBe(1);
+    }
+
+    // A recent key still has its original failure and settles after just one additional attempt.
+    registerFailingHighlightWorkerForTest();
+    await prefetchHighlightedDiff({
+      file: createTestRevision(1_099),
+      offloadLargeDiff: true,
+      theme,
+    });
+    const worker = registerFailingHighlightWorkerForTest();
+    const settled = await prefetchHighlightedDiff({
+      file: createTestRevision(1_099),
+      offloadLargeDiff: true,
+      theme,
+    });
+    expect(settled.retryable).toBeUndefined();
+    expect(worker.calls).toBe(0);
+  });
+
   test("wakes a reader holding provisional rows when the key finally caches a result", async () => {
     const file = createLargeHighlightTestFile("provisional-reader-wakeup");
     const theme = resolveTheme("github-dark-default", null);
