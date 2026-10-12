@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { versionPackages } from "./changeset-version";
+import { type ChangesetVersionCommands, versionPackages } from "./changeset-version";
 
 const roots: string[] = [];
 
@@ -20,8 +20,32 @@ function createTestWorkspace() {
   return { repoRoot, packageRoot };
 }
 
+/** Build command stubs that record their calls instead of spawning Changesets or Bun. */
+function createTestCommands(overrides: Partial<ChangesetVersionCommands> = {}) {
+  const calls: string[] = [];
+  const commands: ChangesetVersionCommands = {
+    runChangesets: (repoRoot) => {
+      calls.push(`changesets:${repoRoot}`);
+      return overrides.runChangesets?.(repoRoot) ?? 0;
+    },
+    refreshLockfile: (repoRoot) => {
+      calls.push(`lockfile:${repoRoot}`);
+      return overrides.refreshLockfile?.(repoRoot) ?? 0;
+    },
+  };
+  return { calls, commands };
+}
+
+/** Read the version Bun recorded for the `packages/hunk` workspace. */
+function readTestLockfileHunkVersion(repoRoot: string) {
+  const lockfile = Bun.JSONC.parse(readFileSync(path.join(repoRoot, "bun.lock"), "utf8")) as {
+    workspaces: Record<string, { version?: string }>;
+  };
+  return lockfile.workspaces["packages/hunk"]?.version;
+}
+
 describe("canonical changelog versioning", () => {
-  test("uses real Changesets output for the package manifest and canonical root changelog", () => {
+  test("uses real Changesets and Bun output for the manifest, root changelog, and lockfile", () => {
     const paths = createTestWorkspace();
     mkdirSync(path.join(paths.repoRoot, ".changeset"), { recursive: true });
     writeFileSync(
@@ -40,12 +64,16 @@ describe("canonical changelog versioning", () => {
       path.join(paths.repoRoot, ".changeset", "real-version.md"),
       '---\n"hunkdiff": patch\n---\n\nVerify the real version output.\n',
     );
+    const install = Bun.spawnSync(["bun", "install", "--lockfile-only"], { cwd: paths.repoRoot });
+    expect(install.exitCode).toBe(0);
+    expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.0");
 
     versionPackages(paths);
 
     expect(
       JSON.parse(readFileSync(path.join(paths.packageRoot, "package.json"), "utf8")).version,
     ).toBe("1.0.1");
+    expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.1");
     expect(readFileSync(path.join(paths.repoRoot, "CHANGELOG.md"), "utf8")).toContain("## 1.0.1");
     expect(existsSync(path.join(paths.packageRoot, "CHANGELOG.md"))).toBe(false);
     expect(existsSync(path.join(paths.repoRoot, ".changeset", "real-version.md"))).toBe(false);
@@ -53,25 +81,61 @@ describe("canonical changelog versioning", () => {
 
   test("stages root history for Changesets and returns its output to the root", () => {
     const paths = createTestWorkspace();
-
-    versionPackages(paths, () => {
-      const staged = path.join(paths.packageRoot, "CHANGELOG.md");
-      expect(readFileSync(staged, "utf8")).toContain("## 1.0.0");
-      writeFileSync(staged, "# Changelog\n\n## 1.1.0\n\n- Added packages.\n\n## 1.0.0\n");
-      return 0;
+    const { commands } = createTestCommands({
+      runChangesets: () => {
+        const staged = path.join(paths.packageRoot, "CHANGELOG.md");
+        expect(readFileSync(staged, "utf8")).toContain("## 1.0.0");
+        writeFileSync(staged, "# Changelog\n\n## 1.1.0\n\n- Added packages.\n\n## 1.0.0\n");
+        return 0;
+      },
     });
+
+    versionPackages(paths, commands);
 
     expect(readFileSync(path.join(paths.repoRoot, "CHANGELOG.md"), "utf8")).toContain("## 1.1.0");
     expect(existsSync(path.join(paths.packageRoot, "CHANGELOG.md"))).toBe(false);
   });
 
-  test("removes the staged package changelog when Changesets fails", () => {
+  test("removes the staged package changelog and skips the lockfile when Changesets fails", () => {
     const paths = createTestWorkspace();
+    const { calls, commands } = createTestCommands({ runChangesets: () => 2 });
 
-    expect(() => versionPackages(paths, () => 2)).toThrow("failed with exit 2");
+    expect(() => versionPackages(paths, commands)).toThrow("Changesets version failed with exit 2");
     expect(readFileSync(path.join(paths.repoRoot, "CHANGELOG.md"), "utf8")).not.toContain(
       "## 1.1.0",
     );
+    expect(existsSync(path.join(paths.packageRoot, "CHANGELOG.md"))).toBe(false);
+    expect(calls).toEqual([`changesets:${paths.repoRoot}`]);
+  });
+
+  test("refreshes the lockfile from the repository root after Changesets succeeds", () => {
+    const paths = createTestWorkspace();
+    const { calls, commands } = createTestCommands({
+      runChangesets: () => {
+        writeFileSync(path.join(paths.packageRoot, "CHANGELOG.md"), "# Changelog\n\n## 1.1.0\n");
+        return 0;
+      },
+    });
+
+    versionPackages(paths, commands);
+
+    expect(calls).toEqual([`changesets:${paths.repoRoot}`, `lockfile:${paths.repoRoot}`]);
+  });
+
+  test("keeps the versioned changelog and reports the recovery command when the refresh fails", () => {
+    const paths = createTestWorkspace();
+    const { commands } = createTestCommands({
+      runChangesets: () => {
+        writeFileSync(path.join(paths.packageRoot, "CHANGELOG.md"), "# Changelog\n\n## 1.1.0\n");
+        return 0;
+      },
+      refreshLockfile: () => 1,
+    });
+
+    expect(() => versionPackages(paths, commands)).toThrow(
+      "bun.lock refresh failed with exit 1; run `bun install --lockfile-only`.",
+    );
+    expect(readFileSync(path.join(paths.repoRoot, "CHANGELOG.md"), "utf8")).toContain("## 1.1.0");
     expect(existsSync(path.join(paths.packageRoot, "CHANGELOG.md"))).toBe(false);
   });
 });
