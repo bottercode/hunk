@@ -41,10 +41,32 @@ function readTestLockfileHunkVersion(repoRoot: string) {
   const lockfile = Bun.JSONC.parse(readFileSync(path.join(repoRoot, "bun.lock"), "utf8")) as {
     workspaces: Record<string, { version?: string }>;
   };
-  return lockfile.workspaces["packages/hunk"]?.version;
+  // Bun can serialize workspace keys with native separators on Windows.
+  return Object.entries(lockfile.workspaces).find(
+    ([workspacePath]) => workspacePath.replaceAll("\\", "/") === "packages/hunk",
+  )?.[1].version;
 }
 
 describe("canonical changelog versioning", () => {
+  test.each(["packages/hunk", "packages\\hunk"])(
+    "reads the workspace version from lockfile key %s",
+    (workspaceKey) => {
+      const paths = createTestWorkspace();
+      writeFileSync(
+        path.join(paths.repoRoot, "bun.lock"),
+        JSON.stringify({
+          workspaces: {
+            "": { version: "9.0.0" },
+            "packages/other": { version: "2.0.0" },
+            [workspaceKey]: { version: "1.0.0" },
+          },
+        }),
+      );
+
+      expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.0");
+    },
+  );
+
   test("uses real Changesets and Bun output for the manifest, root changelog, and lockfile", () => {
     const paths = createTestWorkspace();
     mkdirSync(path.join(paths.repoRoot, ".changeset"), { recursive: true });
