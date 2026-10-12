@@ -86,19 +86,39 @@ describe("canonical changelog versioning", () => {
       path.join(paths.repoRoot, ".changeset", "real-version.md"),
       '---\n"hunkdiff": patch\n---\n\nVerify the real version output.\n',
     );
-    const install = Bun.spawnSync(["bun", "install", "--lockfile-only"], { cwd: paths.repoRoot });
-    expect(install.exitCode).toBe(0);
-    expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.0");
+    const install = Bun.spawnSync([process.execPath, "install", "--lockfile-only"], {
+      cwd: paths.repoRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
-    versionPackages(paths);
+    try {
+      expect(install.exitCode).toBe(0);
+      expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.0");
 
-    expect(
-      JSON.parse(readFileSync(path.join(paths.packageRoot, "package.json"), "utf8")).version,
-    ).toBe("1.0.1");
-    expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.1");
-    expect(readFileSync(path.join(paths.repoRoot, "CHANGELOG.md"), "utf8")).toContain("## 1.0.1");
-    expect(existsSync(path.join(paths.packageRoot, "CHANGELOG.md"))).toBe(false);
-    expect(existsSync(path.join(paths.repoRoot, ".changeset", "real-version.md"))).toBe(false);
+      versionPackages(paths);
+
+      expect(
+        JSON.parse(readFileSync(path.join(paths.packageRoot, "package.json"), "utf8")).version,
+      ).toBe("1.0.1");
+      expect(readTestLockfileHunkVersion(paths.repoRoot)).toBe("1.0.1");
+      expect(readFileSync(path.join(paths.repoRoot, "CHANGELOG.md"), "utf8")).toContain("## 1.0.1");
+      expect(existsSync(path.join(paths.packageRoot, "CHANGELOG.md"))).toBe(false);
+      expect(existsSync(path.join(paths.repoRoot, ".changeset", "real-version.md"))).toBe(false);
+    } catch (error) {
+      // Preserve generated evidence before afterEach removes the temporary workspace.
+      const lockfilePath = path.join(paths.repoRoot, "bun.lock");
+      console.error("Real version command diagnostics", {
+        bunVersion: Bun.version,
+        executable: process.execPath,
+        platform: process.platform,
+        installExitCode: install.exitCode,
+        installStdout: install.stdout.toString(),
+        installStderr: install.stderr.toString(),
+        lockfile: existsSync(lockfilePath) ? readFileSync(lockfilePath, "utf8") : "missing",
+      });
+      throw error;
+    }
   }, 30_000);
 
   test("stages root history for Changesets and returns its output to the root", () => {

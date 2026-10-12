@@ -40,8 +40,9 @@ function runInRepo(command: string[], repoRoot: string) {
 
 const RELEASE_COMMANDS: ChangesetVersionCommands = {
   runChangesets: (repoRoot) =>
-    runInRepo(["bun", "x", "@changesets/cli@2.31.0", "version"], repoRoot),
-  refreshLockfile: (repoRoot) => runInRepo(["bun", "install", "--lockfile-only"], repoRoot),
+    runInRepo([process.execPath, "x", "@changesets/cli@2.31.0", "version"], repoRoot),
+  refreshLockfile: (repoRoot) =>
+    runInRepo([process.execPath, "install", "--lockfile-only"], repoRoot),
 };
 
 /** Run one Changesets version operation against an explicitly staged canonical changelog. */
