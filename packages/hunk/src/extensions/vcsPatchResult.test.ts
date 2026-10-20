@@ -180,6 +180,31 @@ describe("published byte readers", () => {
     ]);
   });
 
+  test("share one in-flight read between overlapping requests for the same side", async () => {
+    let attempts = 0;
+    let finish: (bytes: Uint8Array) => void = () => undefined;
+    const result = toInternalVcsPatchResult(
+      baseResult({
+        readFileBytes: () => {
+          attempts += 1;
+          return new Promise<Uint8Array>((resolve) => {
+            finish = resolve;
+          });
+        },
+      }),
+    );
+    const fetcher = result.byteFetcherBuilder?.(binaryImage);
+
+    // A replacement layout request asks again before the first read has answered.
+    const first = fetcher?.getBytes("old");
+    const replacement = fetcher?.getBytes("old");
+    finish(new Uint8Array([3]));
+
+    expect(await first).toEqual(new Uint8Array([3]));
+    expect(await replacement).toEqual(new Uint8Array([3]));
+    expect(attempts).toBe(1);
+  });
+
   test("resolve a failed read to null without caching it, so a later layout can retry", async () => {
     let attempts = 0;
     const result = toInternalVcsPatchResult(

@@ -96,41 +96,58 @@ function toSourceFetcherBuilder(
  * Adapt a published per-file byte reader to the internal per-file byte fetcher.
  *
  * Binary files are read here on purpose: they are what byte readers exist for. Each side is
- * read at most once and its answer cached, so adapters can stay stateless; an over-limit side
- * caches as unavailable. A rejected read or a malformed answer resolves `null` without caching,
- * so a transient failure can be retried by a later layout request.
+ * read at most once: the pending read is cached as soon as it starts, so a layout request that
+ * replaces an aborted one shares the read already in flight instead of starting another, and
+ * adapters can stay stateless. An over-limit side caches as unavailable. A rejected read or a
+ * malformed answer resolves `null` and is evicted, so a later layout request can retry it.
  */
 function toByteFetcherBuilder(read: ExtensionVcsFileBytesReader): ByteFetcherBuilder {
   return (file) => {
-    const cache = new Map<FileSourceSide, Uint8Array | null>();
+    const reads = new Map<FileSourceSide, Promise<Uint8Array | null>>();
+
+    /** Ask the adapter for one side; `undefined` marks an answer that must not be cached. */
+    async function requestBytes(side: FileSourceSide): Promise<Uint8Array | null | undefined> {
+      let result: unknown;
+      try {
+        result = await read({
+          path: file.path,
+          previousPath: file.previousPath,
+          changeType: file.type,
+          isUntracked: file.isUntracked,
+          side,
+        });
+      } catch {
+        return undefined;
+      }
+
+      if (result === null || result instanceof Uint8Array) {
+        return result;
+      }
+      if (typeof result === "object" && (result as { kind?: unknown }).kind === "too-large") {
+        return null;
+      }
+      return undefined;
+    }
 
     return {
-      async getBytes(side) {
-        if (cache.has(side)) {
-          return cache.get(side) ?? null;
+      getBytes(side) {
+        const cached = reads.get(side);
+        if (cached) {
+          return cached;
         }
 
-        let result: unknown;
-        try {
-          result = await read({
-            path: file.path,
-            previousPath: file.previousPath,
-            changeType: file.type,
-            isUntracked: file.isUntracked,
-            side,
-          });
-        } catch {
+        // The continuation always runs after `set` below, so eviction sees this exact promise.
+        const pending: Promise<Uint8Array | null> = requestBytes(side).then((bytes) => {
+          if (bytes !== undefined) {
+            return bytes;
+          }
+          if (reads.get(side) === pending) {
+            reads.delete(side);
+          }
           return null;
-        }
-
-        if (result === null || result instanceof Uint8Array) {
-          cache.set(side, result);
-          return result;
-        }
-        if (typeof result === "object" && (result as { kind?: unknown }).kind === "too-large") {
-          cache.set(side, null);
-        }
-        return null;
+        });
+        reads.set(side, pending);
+        return pending;
       },
     };
   };
