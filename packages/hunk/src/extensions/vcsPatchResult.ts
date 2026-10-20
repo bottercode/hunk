@@ -13,6 +13,7 @@ import type { DiffFile } from "../core/changeset/model";
 import type { VcsPatchResult } from "../core/vcs/types";
 import type {
   ExtensionVcsExtraFile,
+  ExtensionVcsFileBytesReader,
   ExtensionVcsFileSourceReader,
   ExtensionVcsPatchResult,
 } from "../extension-api/types";
@@ -28,6 +29,7 @@ import { validateExtensionReviewDescriptor } from "../core/reviewDescriptor";
  */
 
 type SourceFetcherBuilder = NonNullable<BuildDiffFileOptions["sourceFetcherBuilder"]>;
+type ByteFetcherBuilder = NonNullable<BuildDiffFileOptions["byteFetcherBuilder"]>;
 
 /**
  * Adapt a published per-file source reader to the internal per-file fetcher.
@@ -91,6 +93,50 @@ function toSourceFetcherBuilder(
 }
 
 /**
+ * Adapt a published per-file byte reader to the internal per-file byte fetcher.
+ *
+ * Binary files are read here on purpose: they are what byte readers exist for. Each side is
+ * read at most once and its answer cached, so adapters can stay stateless; an over-limit side
+ * caches as unavailable. A rejected read or a malformed answer resolves `null` without caching,
+ * so a transient failure can be retried by a later layout request.
+ */
+function toByteFetcherBuilder(read: ExtensionVcsFileBytesReader): ByteFetcherBuilder {
+  return (file) => {
+    const cache = new Map<FileSourceSide, Uint8Array | null>();
+
+    return {
+      async getBytes(side) {
+        if (cache.has(side)) {
+          return cache.get(side) ?? null;
+        }
+
+        let result: unknown;
+        try {
+          result = await read({
+            path: file.path,
+            previousPath: file.previousPath,
+            changeType: file.type,
+            isUntracked: file.isUntracked,
+            side,
+          });
+        } catch {
+          return null;
+        }
+
+        if (result === null || result instanceof Uint8Array) {
+          cache.set(side, result);
+          return result;
+        }
+        if (typeof result === "object" && (result as { kind?: unknown }).kind === "too-large") {
+          cache.set(side, null);
+        }
+        return null;
+      },
+    };
+  };
+}
+
+/**
  * Build the diff model for one file an adapter reported outside its patch text.
  *
  * A skipped entry gets placeholder metadata and no source fetcher — there is
@@ -102,6 +148,7 @@ function toInternalExtraFile(
   index: number,
   sourcePrefix: string,
   sourceFetcherBuilder: SourceFetcherBuilder | undefined,
+  byteFetcherBuilder: ByteFetcherBuilder | undefined,
 ): DiffFile {
   if (entry.kind === "skipped") {
     return buildDiffFile(
@@ -130,6 +177,7 @@ function toInternalExtraFile(
       previousPath: entry.previousPath,
       isUntracked: entry.isUntracked,
       sourceFetcherBuilder,
+      byteFetcherBuilder,
     },
   );
 }
@@ -138,6 +186,9 @@ function toInternalExtraFile(
 export function toInternalVcsPatchResult(result: ExtensionVcsPatchResult): VcsPatchResult {
   const sourceFetcherBuilder = result.readFileSource
     ? toSourceFetcherBuilder(result.readFileSource, result.sourceCacheKey)
+    : undefined;
+  const byteFetcherBuilder = result.readFileBytes
+    ? toByteFetcherBuilder(result.readFileBytes)
     : undefined;
 
   return {
@@ -149,8 +200,9 @@ export function toInternalVcsPatchResult(result: ExtensionVcsPatchResult): VcsPa
       result.review === undefined ? undefined : validateExtensionReviewDescriptor(result.review),
     untrackedPaths: result.untrackedPaths,
     sourceFetcherBuilder,
+    byteFetcherBuilder,
     extraFiles: result.extraFiles?.map((entry, index) =>
-      toInternalExtraFile(entry, index, result.repoRoot, sourceFetcherBuilder),
+      toInternalExtraFile(entry, index, result.repoRoot, sourceFetcherBuilder, byteFetcherBuilder),
     ),
   };
 }

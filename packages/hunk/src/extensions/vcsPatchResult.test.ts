@@ -148,6 +148,81 @@ describe("published source readers", () => {
   });
 });
 
+describe("published byte readers", () => {
+  const binaryImage = {
+    path: "icon.png",
+    type: "change" as const,
+    isUntracked: false,
+    isBinary: true,
+  };
+
+  test("serve binary files and read each side once", async () => {
+    const requests: ExtensionVcsFileSourceRequest[] = [];
+    const result = toInternalVcsPatchResult(
+      baseResult({
+        readFileBytes: async (request) => {
+          requests.push(request);
+          return request.side === "old" ? new Uint8Array([1]) : null;
+        },
+      }),
+    );
+
+    const fetcher = result.byteFetcherBuilder?.(binaryImage);
+
+    expect(await fetcher?.getBytes("old")).toEqual(new Uint8Array([1]));
+    expect(await fetcher?.getBytes("new")).toBeNull();
+    // Both answers, the absent side included, come from the boundary's cache the second time.
+    expect(await fetcher?.getBytes("old")).toEqual(new Uint8Array([1]));
+    expect(await fetcher?.getBytes("new")).toBeNull();
+    expect(requests.map((request) => [request.path, request.side])).toEqual([
+      ["icon.png", "old"],
+      ["icon.png", "new"],
+    ]);
+  });
+
+  test("resolve a failed read to null without caching it, so a later layout can retry", async () => {
+    let attempts = 0;
+    const result = toInternalVcsPatchResult(
+      baseResult({
+        readFileBytes: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("transient");
+          return new Uint8Array([2]);
+        },
+      }),
+    );
+    const fetcher = result.byteFetcherBuilder?.(binaryImage);
+
+    expect(await fetcher?.getBytes("new")).toBeNull();
+    expect(await fetcher?.getBytes("new")).toEqual(new Uint8Array([2]));
+    expect(attempts).toBe(2);
+  });
+
+  test("cache a too-large side as unavailable and refuse malformed answers", async () => {
+    let attempts = 0;
+    const result = toInternalVcsPatchResult(
+      baseResult({
+        readFileBytes: async (request) => {
+          attempts += 1;
+          return request.side === "old"
+            ? { kind: "too-large", maxBytes: 10 }
+            : ("text is not bytes" as unknown as Uint8Array);
+        },
+      }),
+    );
+    const fetcher = result.byteFetcherBuilder?.(binaryImage);
+
+    expect(await fetcher?.getBytes("old")).toBeNull();
+    expect(await fetcher?.getBytes("old")).toBeNull();
+    expect(await fetcher?.getBytes("new")).toBeNull();
+    expect(attempts).toBe(2);
+  });
+
+  test("are absent when the result declares none", () => {
+    expect(toInternalVcsPatchResult(baseResult()).byteFetcherBuilder).toBeUndefined();
+  });
+});
+
 describe("published review metadata", () => {
   test("is validated, copied, and frozen at the adapter boundary", () => {
     const review = {
@@ -175,10 +250,11 @@ describe("published review metadata", () => {
 });
 
 describe("published extra files", () => {
-  test("build a diff file from a one-file patch, labeled with the declared path", () => {
+  test("build a diff file from a one-file patch, labeled with the declared path", async () => {
     const result = toInternalVcsPatchResult(
       baseResult({
         readFileSource: async () => "hello\n",
+        readFileBytes: async () => new Uint8Array([104, 105]),
         extraFiles: [
           { kind: "patch", path: "note.txt", patchText: ADDED_FILE_PATCH, isUntracked: true },
         ],
@@ -191,8 +267,9 @@ describe("published extra files", () => {
     expect(file?.isUntracked).toBe(true);
     expect(file?.stats).toEqual({ additions: 1, deletions: 0 });
     expect(file?.metadata.type).toBe("new");
-    // Patch entries share the result's source reader; skipped ones cannot.
+    // Patch entries share the result's source and byte readers; skipped ones cannot.
     expect(file?.sourceFetcher).toBeDefined();
+    expect(await file?.byteFetcher?.getBytes("new")).toEqual(new Uint8Array([104, 105]));
   });
 
   test("build a placeholder for a skipped file with no content to read", () => {
